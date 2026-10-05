@@ -1,0 +1,11 @@
+.git
+.github
+.fleet
+.fleet-deploy.log
+bin
+docs
+build
+build-*
+cmake-build-*
+*.log
+.env

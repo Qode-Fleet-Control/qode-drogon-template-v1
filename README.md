@@ -1,130 +1,68 @@
-# fleet-template-v1
+# Drogon template
 
-## What This Template Is
+Provisioned from [`Qode-Fleet-Control/fleet-template-v1`](https://github.com/Qode-Fleet-Control/fleet-template-v1) — the fleet
+lifecycle contract (`bin/`, `fleet.conf`, `compose.yaml`, deploy workflows) with a Drogon starter laid on top.
 
-`fleet-template-v1` is a **language-agnostic app lifecycle harness** for apps
-managed by the fleet platform. It gives any app — Node, Python, Go, a Docker
-Compose stack, anything — a uniform way to be deployed and controlled, without
-the fleet needing to know a single thing about your stack.
+An HTTP service on Drogon 1.9 (Debian trixie), the C++17/20 asynchronous web framework, generated with `drogon_ctl`. Routes: `GET /` (plain-text greeting, `controllers/RootCtrl`) and `GET /health` (`{"status":"ok"}`, `controllers/HealthCtrl`), both `HttpSimpleController`s.
 
-The fleet injects runtime variables into the environment (`PORT`, `BASE_PATH`,
-`DATABASE_URL`) and calls `./bin/run` to deploy. Everything project-specific —
-how to install, build, and start your app — lives in **one file: `fleet.conf`**.
-That is the only file you edit per project.
+## Origin
 
-## Repository Structure
+    drogon_ctl create project qode-drogon-template-v1 && cd qode-drogon-template-v1/controllers && drogon_ctl create controller HealthCtrl && drogon_ctl create controller RootCtrl
 
-```
-fleet.conf        ← the only file you edit per project
-.env              ← local-only env vars (gitignored)
-bin/
-  _common.sh      ← shared logic; never edit this
-  run             ← install + build + start (called by the fleet)
-  start           ← start only (no rebuild)
-  restart         ← stop + full run
-  reload          ← hot-reload config without rebuild
-  stop            ← stop the running process
-```
+Run with drogon_ctl 1.9.0 from Debian trixie's `drogon` package, inside a container: `docker run --rm -v "$PWD":/w -w /w debian:trixie bash -c 'apt-get update && apt-get install -y --no-install-recommends drogon && drogon_ctl create project ...'`.
 
-## The One File You Edit: `fleet.conf`
+## Run it
 
-`fleet.conf` is sourced as shell by the lifecycle scripts. Fill in the commands
-for your stack; leave any command empty (`''`) to skip that step.
+### On the fleet
+
+The fleet runs it as containers (the docker runtime): `bin/run` builds the image with
+`docker compose build` and then starts it with `docker compose up` in the foreground, publishing `$PORT`.
+
+It listens on `0.0.0.0:$PORT` (default `8080`), read from the environment when the container starts,
+and serves at the root of its own hostname (`https://<hash>.<FLEET_APP_DOMAIN>/`). The health check hits `/health`.
+
+### With docker
 
 ```sh
-NAME="my-app"           # label shown in fleet logs
-PORT="3000"             # default port (fleet overrides via $PORT env var)
-HEALTH_PATH="/"         # HTTP path that returns 200 when the app is ready
-
-INSTALL_CMD='npm ci'
-BUILD_CMD='npm run build'
-START_CMD='node dist/server.js'   # must listen on $PORT; run in foreground
-RELOAD_CMD=''           # optional; empty → falls back to stop+start
+PORT=8080 bin/run                 # build + run through compose, Ctrl-C to stop
+docker compose up --build             # the same, by hand
+curl localhost:8080/health
 ```
 
-> **Critical rule:** single-quote any command that uses `$PORT` or
-> `$BASE_PATH`. Single quotes defer variable expansion to **runtime** — when the
-> command actually runs, with the fleet-injected value — rather than at the
-> moment `fleet.conf` is sourced (when those values aren't set yet). Use
-> `START_CMD='gunicorn app:app --bind 0.0.0.0:$PORT'`, never double quotes.
-
-## How the Lifecycle Works
-
-| Script | What it does | When to use |
-| --- | --- | --- |
-| `bin/run` | `INSTALL_CMD` → `BUILD_CMD` → `START_CMD` | Fleet deploy, fresh start |
-| `bin/start` | `START_CMD` only | Restart without rebuild |
-| `bin/restart` | stop + `bin/run` | After a code/dep change |
-| `bin/reload` | `RELOAD_CMD`, or stop+start if empty | After a config-only change |
-| `bin/stop` | Kill by pidfile or port | Tear down |
-
-> The process PID is written to `.fleet/app.pid` so subsequent `stop`/`restart`
-> calls can find and terminate it reliably. If the pidfile is missing or stale,
-> `stop` falls back to freeing whatever is listening on `$PORT`.
-
-## How to Apply This to Your Project
-
-### Step 1 — Copy the template into your repo
+### Without docker
 
 ```sh
-cp -r fleet-template-v1/* my-project/
+# Debian/Ubuntu: sudo apt install build-essential cmake libdrogon-dev
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j
+PORT=8080 ./build/qode-drogon-template-v1
+# or: FLEET_RUNTIME=process PORT=8080 bin/run
 ```
 
-Or, if starting fresh, just clone it and work from `main`.
+`fleet.conf` drives every script in `bin/`:
 
-### Step 2 — Edit `fleet.conf` (the only required change)
+| step | docker runtime (fleet) | `FLEET_RUNTIME=process` |
+|---|---|---|
+| install | — | `(none)` |
+| build | `docker compose build` | `cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j` |
+| start | `docker compose up --remove-orphans` | `env PORT="$PORT" ./build/qode-drogon-template-v1` |
 
-Fill in your stack's commands. Per-stack examples:
+## Layout
 
-```sh
-# Node.js
-INSTALL_CMD='npm ci'
-BUILD_CMD='npm run build'
-START_CMD='node dist/index.js'
+Stock `drogon_ctl` layout: `main.cc`, `CMakeLists.txt`, `config.json` / `config.yaml` (sample configs, not loaded), `controllers/`, `filters/`, `plugins/`, `models/model.json`, `views/`, `test/` (a `DROGON_TEST` runner).
+- `Dockerfile` — `debian:trixie` build stage with `libdrogon-dev`, builds only the app target; `debian:trixie-slim` runtime with `libdrogon1t64`; non-root user `app`.
+- `compose.yaml` — service `app`, publishes `${PORT:-8080}:${PORT:-8080}`, fleet variables passed through by name.
 
-# Python (Gunicorn)
-INSTALL_CMD='pip install -r requirements.txt'
-BUILD_CMD=''
-START_CMD='gunicorn app:app --bind 0.0.0.0:$PORT'
+## Deviations from stock, and why
 
-# Go
-INSTALL_CMD=''
-BUILD_CMD='go build -o ./out/server ./cmd/server'
-START_CMD='./out/server'
+- `main.cc`: the generated `addListener("0.0.0.0", 5555)` now reads `$PORT` at runtime (default 8080), and `setThreadNum(0)` uses one IO thread per core.
+- `controllers/RootCtrl` and `controllers/HealthCtrl` are generated stubs with a `PATH_ADD` and a response body filled in.
+- The generated empty `build/` directory is removed; `filters/`, `plugins/`, `views/` keep a `.gitkeep` so git keeps the generated layout.
+- The generated `.gitignore` is kept and the fleet entries (`.env`, `.fleet/`, `.fleet-deploy.log`, `*.log`, `build/`) are appended.
 
-# Docker Compose
-INSTALL_CMD=''
-BUILD_CMD='docker compose build'
-START_CMD='docker compose up'
-RELOAD_CMD='docker compose up -d --no-build'
-```
+## Verified
 
-### Step 3 — Set local env vars in `.env` (gitignored)
+**Not verified.** The image was never built: the shared docker host's disk stayed under 1 GB for hours while this was cut, and the one build attempt was cancelled by a disk guard (146 MB left) during `apt-get install`. `drogon_ctl` itself ran (output above). Build and boot it once before trusting it:
 
-```sh
-APP_NAME=My App
-DATABASE_URL=postgres://localhost/mydb
-```
+    /workspace/claude-workspace/agent-fleet/.claude/skills/migrate-docker-runtime/scripts/verify.sh . <port>
 
-### Step 4 — Verify standalone
-
-```sh
-PORT=3001 bin/run      # should install, build, and serve on 3001
-curl http://localhost:3001/   # should 200
-```
-
-### Step 5 — Connect to the fleet
-
-Point the fleet at your repo. It will clone it, inject `PORT` / `BASE_PATH` /
-`DATABASE_URL`, and call `bin/run`. As long as your `START_CMD` listens on
-`$PORT` and `HEALTH_PATH` returns 200, the fleet will mark the app healthy.
-
-## Key Invariants
-
-- **`START_CMD` must run in the foreground and listen on `$PORT`.** Do not use a
-  dev server — HMR / hot-reload chunks 404 behind the ingress and will break the
-  app.
-- **Never put secrets in `fleet.conf`** — it's committed. Use `.env` locally;
-  the fleet injects secrets via the environment.
-- **`bin/_common.sh` is shared infrastructure** — don't edit it per project. All
-  project-specific configuration belongs in `fleet.conf`.
+See `docs/fleet-lifecycle.md` for the lifecycle contract.
