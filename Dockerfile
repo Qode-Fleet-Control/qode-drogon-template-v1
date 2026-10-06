@@ -8,6 +8,8 @@
 FROM debian:trixie AS build
 RUN apt-get update \
  && apt-get install -y --no-install-recommends build-essential cmake ninja-build libdrogon-dev \
+      libjsoncpp-dev uuid-dev zlib1g-dev libssl-dev libbrotli-dev libc-ares-dev \
+      libpq-dev libsqlite3-dev default-libmysqlclient-dev libhiredis-dev libyaml-cpp-dev \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY . .
@@ -24,6 +26,9 @@ WORKDIR /app
 ARG BUILD_ID=""
 ENV PORT=8080 BUILD_ID=$BUILD_ID
 COPY --from=build /out/app /app/app
+# Drogon creates ./uploads/tmp/00..FF under its working dir at startup; the app user must
+# own it (WORKDIR is created by root).
+RUN chown app:app /app
 EXPOSE 8080
 USER app
 ENTRYPOINT ["/app/app"]
